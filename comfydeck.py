@@ -1272,10 +1272,17 @@ def make_comfyui_tab():
             refresh_venv_status()
             return
 
-        cmd = f'{base_py} -m venv "{vdir}" && "{vpy}" -m pip install -U pip'
+        # 探测解释器版本，确保 Debian/Ubuntu 的 pythonX.Y-venv 已装（否则 ensurepip 不可用，venv 失败）
+        _r = subprocess.run(f"{base_py} -c \"import sys;print('%d.%d' % sys.version_info[:2])\"",
+                            shell=True, capture_output=True, text=True)
+        ver = _r.stdout.strip()
+        venv_pkg = f'python{ver}-venv' if ver else 'python3-venv'
+        cmd = (f'(apt-get install -y {venv_pkg} || (apt-get update && apt-get install -y {venv_pkg}) '
+               f'|| apt-get install -y python3-venv || true) && '
+               f'{base_py} -m venv {shlex.quote(vdir)} && {shlex.quote(vpy)} -m pip install -U pip')
         with out:
             print(f"▶ 创建虚拟环境 → {vdir}")
-            print(f"  基础解释器: {base_py}\n{'─'*60}")
+            print(f"  基础解释器: {base_py}（{ver or '?'}）；确保 {venv_pkg} 已装\n{'─'*60}")
         set_status('⏳ 正在创建虚拟环境...', '#f5a623')
 
         def _done(rc):
