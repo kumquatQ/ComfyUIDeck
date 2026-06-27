@@ -283,6 +283,37 @@ def rclone_remotes():
         return []
     return [x.strip().rstrip(':') for x in r.stdout.split('\n') if x.strip()]
 
+def rclone_dirs(remote):
+    """rclone lsd remote: 列出顶层文件夹名。"""
+    r = subprocess.run(f'rclone lsd {shlex.quote(remote + ":")}',
+                       shell=True, capture_output=True, text=True)
+    if r.returncode != 0:
+        return []
+    dirs = []
+    for line in r.stdout.split('\n'):
+        parts = line.split(None, 4)   # size date time count name（名字可能含空格）
+        if len(parts) == 5:
+            dirs.append(parts[4])
+    return dirs
+
+def list_output_files(odir):
+    """列出 output 下所有文件，返回 [{'full','rel','size'}]；目录不存在返回 None。"""
+    if not os.path.isdir(odir):
+        return None
+    items = []
+    for root, _d, files in os.walk(odir):
+        for f in files:
+            full = os.path.join(root, f)
+            try:
+                size = os.path.getsize(full)
+            except OSError:
+                size = 0
+            items.append({'full': full,
+                          'rel': os.path.relpath(full, odir).replace('\\', '/'),
+                          'size': size})
+    items.sort(key=lambda x: x['rel'])
+    return items
+
 HF_API_TYPES = {'model': 'models', 'dataset': 'datasets', 'space': 'spaces'}
 
 def hf_list_files(repo_id, repo_type='model', token=None, endpoint='https://huggingface.co'):
@@ -1976,19 +2007,28 @@ def make_ops_tab():
     btn_scan_out = widgets.Button(description='🔄 扫描 output',
                                   layout=widgets.Layout(width='130px', height='32px'),
                                   style={'button_color': '#374151'})
+    btn_preview = widgets.Button(description='🖼 预览',
+                                 layout=widgets.Layout(width='90px', height='32px'),
+                                 style={'button_color': '#374151'})
     btn_zip = widgets.Button(description='📦 打包下载',
                              layout=widgets.Layout(width='120px', height='32px'),
                              style={'button_color': '#3b82f6'})
-    btn_preview = widgets.Button(description='🖼 预览图片',
-                                 layout=widgets.Layout(width='120px', height='32px'),
-                                 style={'button_color': '#374151'})
-    row_out1 = widgets.HBox([btn_scan_out, btn_preview, btn_zip], layout=widgets.Layout(gap='8px', margin='4px 0'))
+    btn_fall = widgets.Button(description='全选', layout=widgets.Layout(width='64px', height='32px'),
+                              style={'button_color': '#374151', 'font_size': '11px'})
+    btn_fnone = widgets.Button(description='全不选', layout=widgets.Layout(width='64px', height='32px'),
+                               style={'button_color': '#374151', 'font_size': '11px'})
+    row_out1 = widgets.HBox([btn_scan_out, btn_preview, btn_zip, btn_fall, btn_fnone],
+                            layout=widgets.Layout(gap='8px', margin='4px 0', flex_flow='row wrap'))
     preview_box = widgets.Box([], layout=widgets.Layout(flex_flow='row wrap', margin='6px 0'))
+    files_hint = widgets.HTML('<span style="font-size:12px;color:#7f8bb0;">点「扫描 output」列出文件并勾选（供上传选择）</span>')
+    files_box = widgets.VBox([], layout=widgets.Layout(
+        border='1px solid #363b54', border_radius='6px',
+        max_height='200px', overflow='auto', padding='6px', margin='4px 0'))
 
     up_repo  = widgets.Text(placeholder='备份到：用户名/仓库名（建议 dataset）', layout=widgets.Layout(width='320px'))
     up_token = widgets.Text(placeholder='hf_xxx（write）', layout=widgets.Layout(width='200px'))
-    btn_up_out = widgets.Button(description='⬆ 上传 output',
-                                layout=widgets.Layout(width='130px', height='32px'),
+    btn_up_out = widgets.Button(description='⬆ 上传整个 output',
+                                layout=widgets.Layout(width='140px', height='32px'),
                                 style={'button_color': '#00bcd4'})
     row_out2 = widgets.HBox([lbl('备份到HF:'), up_repo, up_token, btn_up_out],
                             layout=widgets.Layout(gap='6px', margin='4px 0', align_items='center', flex_flow='row wrap'))
@@ -1999,40 +2039,61 @@ def make_ops_tab():
                                        layout=widgets.Layout(width='150px', height='32px'),
                                        style={'button_color': '#374151'})
     remote_dd = widgets.Dropdown(options=[('（先检测）', '')], value='',
-                                 layout=widgets.Layout(width='170px'))
-    rpath_input = widgets.Text(value='ComfyUI-backup/output',
-                               placeholder='网盘内目标路径',
-                               layout=widgets.Layout(width='220px'))
-    btn_rclone_up = widgets.Button(description='☁ 上传 output',
+                                 layout=widgets.Layout(width='160px'))
+    btn_list_dirs = widgets.Button(description='📂 列出文件夹',
                                    layout=widgets.Layout(width='130px', height='32px'),
+                                   style={'button_color': '#374151'})
+    row_rclone1 = widgets.HBox([btn_rclone_detect, remote_dd, btn_list_dirs],
+                               layout=widgets.Layout(gap='6px', margin='4px 0', align_items='center', flex_flow='row wrap'))
+    folder_dd = widgets.Dropdown(options=[('/（根目录）', '')], value='',
+                                 layout=widgets.Layout(width='220px'))
+    subdir_input = widgets.Text(placeholder='可选：子目录/新文件夹名', layout=widgets.Layout(width='200px'))
+    btn_rclone_up = widgets.Button(description='☁ 上传勾选文件',
+                                   layout=widgets.Layout(width='140px', height='32px'),
                                    style={'button_color': '#00bcd4'})
-    row_rclone = widgets.HBox([btn_rclone_detect, remote_dd, lbl('路径:', '40px'), rpath_input, btn_rclone_up],
-                              layout=widgets.Layout(gap='6px', margin='4px 0', align_items='center', flex_flow='row wrap'))
+    row_rclone2 = widgets.HBox([lbl('目标文件夹:'), folder_dd, subdir_input, btn_rclone_up],
+                               layout=widgets.Layout(gap='6px', margin='4px 0', align_items='center', flex_flow='row wrap'))
     rclone_hint = widgets.HTML(
         '<div style="font-size:11px;color:#7f8bb0;margin:2px 0;">'
         '未配置网盘？在有浏览器的电脑装 rclone 后运行 <code>rclone config</code> 添加 OneDrive，'
         '把生成的 <code>~/.config/rclone/rclone.conf</code> 传到云端同路径；'
         '或在云端跑 <code>rclone authorize "onedrive"</code> 按提示授权。</div>')
 
+    PREVIEW_EXTS = ('.png', '.jpg', '.jpeg', '.webp', '.gif', '.bmp')
+    _frows = []   # [(checkbox, item)]，扫描后填充，供上传勾选
+
     def _output_dir():
         return os.path.join(base_path_input.value.strip().rstrip('/'), 'output')
 
     def on_scan_out(b):
         out.clear_output()
+        files_box.children = []
+        _frows.clear()
         odir = _output_dir()
-        if not os.path.isdir(odir):
+        items = list_output_files(odir)
+        if items is None:
+            files_hint.value = '<span style="font-size:12px;color:#f5a623;">未找到 output 目录</span>'
             with out: print(f"ℹ️ 未找到 output 目录：{odir}"); return
-        n, total = 0, 0
-        for root, _d, files in os.walk(odir):
-            for f in files:
-                n += 1
-                try:
-                    total += os.path.getsize(os.path.join(root, f))
-                except OSError:
-                    pass
-        with out:
-            print(f"🖼 output：{odir}\n{'─' * 60}")
-            print(f"  共 {n} 个文件，合计 {human_size(total)}")
+        if not items:
+            files_hint.value = '<span style="font-size:12px;color:#f5a623;">output 目录为空</span>'
+            return
+        total = sum(it['size'] for it in items)
+        cbs = []
+        for it in items:
+            cb = widgets.Checkbox(value=True,
+                                  description=f"{it['rel']}  ({human_size(it['size'])})",
+                                  indent=False, layout=widgets.Layout(width='560px'))
+            _frows.append((cb, it))
+            cbs.append(cb)
+        files_box.children = cbs
+        files_hint.value = (f'<span style="font-size:12px;color:#7f8bb0;">'
+                            f'共 {len(items)} 个文件，合计 {human_size(total)}；勾选后用下方网盘上传</span>')
+
+    def _set_files(v):
+        for cb, _ in _frows:
+            cb.value = v
+    btn_fall.on_click(lambda b: _set_files(True))
+    btn_fnone.on_click(lambda b: _set_files(False))
 
     def on_zip(b):
         out.clear_output()
@@ -2071,11 +2132,9 @@ def make_ops_tab():
         if not ensure_hf_cli(out):
             return
         env = {'HF_TOKEN': token}
-        cmd = f'hf upload "{repo}" "{odir}" output --repo-type dataset'
-        with out: print(f"⬆ 上传 output → {repo}（dataset）\n{'─' * 60}")
+        cmd = f'hf upload {shlex.quote(repo)} {shlex.quote(odir)} output --repo-type dataset'
+        with out: print(f"⬆ 上传整个 output → {repo}（dataset）\n{'─' * 60}")
         run_stream(cmd, out, btn_up_out, env=env)
-
-    PREVIEW_EXTS = ('.png', '.jpg', '.jpeg', '.webp', '.gif', '.bmp')
 
     def on_preview(b):
         out.clear_output()
@@ -2083,35 +2142,37 @@ def make_ops_tab():
         odir = _output_dir()
         if not os.path.isdir(odir):
             with out: print(f"ℹ️ 未找到 output 目录：{odir}"); return
-        imgs, vids = [], []
-        for root, _d, files in os.walk(odir):
-            for f in files:
+        files = []
+        for root, _d, fs in os.walk(odir):
+            for f in fs:
                 full = os.path.join(root, f)
-                low = f.lower()
-                if low.endswith(PREVIEW_EXTS):
-                    try: imgs.append((os.path.getmtime(full), full, f))
-                    except OSError: pass
-                elif low.endswith(('.mp4', '.webm', '.mov')):
-                    vids.append(f)
-        imgs.sort(reverse=True)
-        show = imgs[:12]
-        with out:
-            extra = f"；另有 {len(vids)} 个视频（去文件树查看）" if vids else ""
-            print(f"🖼 最近 {len(show)}/{len(imgs)} 张图片{extra}")
+                try: mt = os.path.getmtime(full)
+                except OSError: mt = 0
+                files.append((mt, full, f))
+        files.sort(reverse=True)
+        show = files[:24]
+        with out: print(f"🖼 最近 {len(show)}/{len(files)} 个产出（图片显缩略图，其余显文件名）")
         tiles = []
         for _mt, full, name in show:
-            try:
-                with open(full, 'rb') as fp:
-                    data = fp.read()
-            except OSError:
-                continue
-            ext = name.rsplit('.', 1)[-1].lower()
-            ext = 'jpeg' if ext == 'jpg' else ext
-            img = widgets.Image(value=data, format=ext,
-                                layout=widgets.Layout(width='170px', height='auto', object_fit='contain'))
-            cap = widgets.HTML(f'<div style="font-size:10px;color:#7f8bb0;width:170px;'
+            low = name.lower()
+            if low.endswith(PREVIEW_EXTS):
+                try:
+                    with open(full, 'rb') as fp:
+                        data = fp.read()
+                except OSError:
+                    continue
+                ext = name.rsplit('.', 1)[-1].lower()
+                ext = 'jpeg' if ext == 'jpg' else ext
+                thumb = widgets.Image(value=data, format=ext,
+                                      layout=widgets.Layout(width='150px', height='150px', object_fit='cover'))
+            else:
+                icon = '🎬' if low.endswith(('.mp4', '.webm', '.mov')) else '📄'
+                thumb = widgets.HTML(
+                    f'<div style="width:150px;height:150px;display:flex;align-items:center;'
+                    f'justify-content:center;background:#2a2e47;border-radius:6px;font-size:44px;">{icon}</div>')
+            cap = widgets.HTML(f'<div style="font-size:10px;color:#7f8bb0;width:150px;'
                                f'overflow:hidden;text-overflow:ellipsis;white-space:nowrap;">{name}</div>')
-            tiles.append(widgets.VBox([img, cap], layout=widgets.Layout(margin='4px')))
+            tiles.append(widgets.VBox([thumb, cap], layout=widgets.Layout(margin='4px')))
         preview_box.children = tiles
 
     def on_rclone_detect(b):
@@ -2122,26 +2183,62 @@ def make_ops_tab():
         if remotes:
             remote_dd.options = [(f'{r}:', r) for r in remotes]
             remote_dd.value = remotes[0]
-            with out: print(f"✅ 已配置网盘：{', '.join(remotes)}")
+            with out: print(f"✅ 已配置网盘：{', '.join(remotes)}；选好网盘后点「📂 列出文件夹」")
         else:
             remote_dd.options = [('（未配置）', '')]
             remote_dd.value = ''
             with out: print("ℹ️ 未检测到已配置的网盘，请按下方提示先用 rclone config 添加 OneDrive")
 
-    def on_rclone_up(b):
+    def on_list_dirs(b):
         out.clear_output()
-        odir   = _output_dir()
         remote = remote_dd.value
-        rpath  = rpath_input.value.strip().strip('/')
-        if not os.path.isdir(odir):
-            with out: print(f"ℹ️ 未找到 output 目录：{odir}"); return
         if not remote:
             with out: print("⚠️ 请先「检测/刷新网盘」并选择一个网盘"); return
         if not ensure_rclone(out):
             return
-        cmd = f'rclone copy "{odir}" "{remote}:{rpath}" -P --transfers=4'
-        with out: print(f"☁ 上传 output → {remote}:{rpath}\n{'─' * 60}")
-        run_stream(cmd, out, btn_rclone_up)
+        with out: print(f"📂 正在读取 {remote}: 的文件夹 ...")
+
+        def _run():
+            dirs = rclone_dirs(remote)
+            folder_dd.options = [('/（根目录）', '')] + [(d, d) for d in dirs]
+            folder_dd.value = ''
+            with out:
+                out.clear_output()
+                if dirs:
+                    print(f"📂 {remote}: 顶层文件夹（{len(dirs)} 个）：{', '.join(dirs)}")
+                    print("在「目标文件夹」下拉选择；也可在「子目录」填新文件夹名（上传时自动创建）")
+                else:
+                    print(f"📂 {remote}: 顶层暂无文件夹；可在「子目录」直接填新文件夹名")
+        run_async(_run, btn_list_dirs)
+
+    def on_rclone_up(b):
+        out.clear_output()
+        remote = remote_dd.value
+        folder = folder_dd.value
+        subdir = subdir_input.value.strip().strip('/')
+        sel = [(cb, it) for cb, it in _frows if cb.value]
+        if not remote:
+            with out: print("⚠️ 请先「检测/刷新网盘」并选择网盘"); return
+        if not sel:
+            with out: print("⚠️ 请先「扫描 output」并勾选要上传的文件"); return
+        if not ensure_rclone(out):
+            return
+        prefix = '/'.join([p for p in (folder, subdir) if p])
+        dest_root = f'{remote}:{prefix}' if prefix else f'{remote}:'
+
+        def _run():
+            with out:
+                print(f"☁ 上传 {len(sel)} 个文件 → {dest_root}\n{'─' * 60}")
+            ok = 0
+            for cb, it in sel:
+                dest = f"{dest_root.rstrip('/')}/{it['rel']}" if prefix else f"{remote}:{it['rel']}"
+                cmd = f"rclone copyto {shlex.quote(it['full'])} {shlex.quote(dest)} -P"
+                with out: print(f"\n▶ {it['rel']}")
+                rc = stream_exec(cmd, out, indent='  ')
+                with out: print("  ✅ 完成" if rc == 0 else f"  ❌ 失败（退出码 {rc}）")
+                if rc == 0: ok += 1
+            with out: print(f"\n{'─' * 60}\n✅ 完成 {ok}/{len(sel)} 个")
+        run_async(_run, btn_rclone_up)
 
     btn_disk.on_click(on_disk)
     btn_clean.on_click(on_clean)
@@ -2150,6 +2247,7 @@ def make_ops_tab():
     btn_zip.on_click(on_zip)
     btn_up_out.on_click(on_up_out)
     btn_rclone_detect.on_click(on_rclone_detect)
+    btn_list_dirs.on_click(on_list_dirs)
     btn_rclone_up.on_click(on_rclone_up)
 
     return widgets.VBox([
@@ -2157,8 +2255,8 @@ def make_ops_tab():
         widgets.HTML('<div style="height:6px"></div>'),
         sec_disk, row_disk,
         widgets.HTML('<div style="height:1px;background:#363b54;margin:10px 0;"></div>'),
-        sec_out, row_out1, preview_box, row_out2,
-        sec_rclone, row_rclone, rclone_hint,
+        sec_out, row_out1, preview_box, files_hint, files_box, row_out2,
+        sec_rclone, row_rclone1, row_rclone2, rclone_hint,
         out,
     ], layout=widgets.Layout(padding='12px'))
 
